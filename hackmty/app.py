@@ -13,7 +13,7 @@ model = keras.models.load_model(MODEL_PATH)
 preprocessor = joblib.load(PREPROC_PATH)
 
 # Cargar datos originales
-df_original = pd.read_excel("data\[HackMTY2025]_ConsumptionPrediction_Dataset_v1.xlsx")
+df_original = pd.read_excel("data/[HackMTY2025]_ConsumptionPrediction_Dataset_v1.xlsx")
 
 @app.route("/")
 def home():
@@ -44,3 +44,4 @@ if __name__ == "__main__":
     import os
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
