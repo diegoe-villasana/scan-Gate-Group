@@ -81,8 +81,15 @@
                     <td>{{ row['Predicted_Waste'] }}</td>
                     <td>{{ row['Waste_Percentage'] }}%</td>
                 </tr>
+                
                 {% endfor %}
             </tbody>
+            <div class="nav-button-container">
+        <a href="/scanner" class="nav-button">
+          Ir al Scanner QR
+        </a>
+    </div>
+            
         </table>
         {% else %}
             <p>No hay datos disponibles.</p>
