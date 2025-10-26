@@ -6,47 +6,54 @@ from pyzbar.pyzbar import decode
 
 app = FastAPI()
 
-# Cámara
+# -----------------------------------
+# CONFIGURACIÓN DE CÁMARA
+# -----------------------------------
 cap = cv2.VideoCapture(0)
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
-# Drawers (usa claves en mayúsculas)
-drawer_capacity = {"DRW_001": 2, "DRW_002": 2, "DRW_003": 10, "DRW_004": 12, "DRAW_005": 8}
+# -----------------------------------
+# CONFIGURACIONES GLOBALES
+# -----------------------------------
+drawer_capacity = {
+    "DRW_001": 2,
+    "DRW_002": 2,
+    "DRW_003": 10,
+    "DRW_004": 12,
+    "DRAW_005": 8
+}
 
-# Contadores globales
-conteo_vuelos = {} 
-
-# Vuelos disponibles y vuelo seleccionado
+conteo_vuelos = {}           # Contadores por vuelo y drawer
 vuelos_disponibles = ["LAK345", "DL045", "AF123", "BA678", "EK088", "BA713"]
-vuelo_actual = None  # será una cadena en MAYÚSCULAS
+vuelo_actual = None          # Vuelo seleccionado
 
-# Último estado mostrado al frontend
-# --- Determinar valores actuales del drawer
-current = 0
-capacidad = 0
-if vuelo_actual and drawer_id:
-    capacidad = drawer_capacity.get(drawer_id, 0)
-    current = conteo_vuelos.get(vuelo_actual, {}).get(drawer_id, 0)
-
-# --- Guardar la información más reciente
-ultimo_qr_info.update({
-    "qr_data": qr_info,
-    "message": mensaje,
-    "status": estado,
-    "drawer": drawer_id or "",
-    "current": current,
-    "capacity": capacidad,
-    "vuelo_actual": vuelo_actual
-})
-
+# Estado global del último QR leído
 ultimo_qr_leido = {"data": None, "timestamp": 0}
+ultimo_qr_info = {
+    "qr_data": None,
+    "message": "Esperando QR...",
+    "status": "waiting",
+    "drawer": "",
+    "current": 0,
+    "capacity": 0,
+    "vuelo_actual": None
+}
 
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+# CORS para frontend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"]
+)
 
 
-# Helper: obtener número de vuelo desde diferentes claves posibles
+# -----------------------------------
+# FUNCIONES AUXILIARES
+# -----------------------------------
 def obtener_vuelo_desde_qr(qr_info: dict):
+    """Busca la clave correcta del número de vuelo en el JSON del QR."""
     posibles = ["flight_number", "flight", "flight_no", "flightNumber", "flight_id", "vuelo", "vuelo_id"]
     for k in posibles:
         if k in qr_info and qr_info[k] not in (None, ""):
@@ -54,6 +61,9 @@ def obtener_vuelo_desde_qr(qr_info: dict):
     return None
 
 
+# -----------------------------------
+# GENERADOR DE FRAMES (VIDEO)
+# -----------------------------------
 def gen_frames():
     global ultimo_qr_info, ultimo_qr_leido, vuelo_actual, conteo_vuelos
 
@@ -68,7 +78,7 @@ def gen_frames():
             datos = codigo.data.decode("utf-8")
             now = time.time()
 
-            # Evitar duplicados recientes
+            # Evitar leer el mismo QR dos veces seguidas
             if datos == ultimo_qr_leido["data"] and now - ultimo_qr_leido["timestamp"] < 2:
                 continue
             ultimo_qr_leido = {"data": datos, "timestamp": now}
@@ -79,6 +89,7 @@ def gen_frames():
             drawer_id = None
             vuelo_qr = None
 
+            # Intentar decodificar el contenido JSON
             try:
                 qr_info = json.loads(datos)
             except Exception:
@@ -104,10 +115,10 @@ def gen_frames():
                     mensaje = "El QR no contiene número de vuelo válido."
                     estado = "error"
 
-                elif vuelo_qr and vuelo_qr.strip().upper() == vuelo_actual.strip().upper():
+                elif vuelo_qr == vuelo_actual:
                     capacidad = drawer_capacity.get(drawer_id, 0)
 
-                    # Asegurar estructura
+                    # Asegurar estructura interna
                     if vuelo_actual not in conteo_vuelos:
                         conteo_vuelos[vuelo_actual] = {}
                     if drawer_id not in conteo_vuelos[vuelo_actual]:
@@ -126,7 +137,7 @@ def gen_frames():
                     mensaje = f"Vuelo incorrecto: {vuelo_qr or 'N/A'} ≠ {vuelo_actual}"
                     estado = "flight_error"
 
-            # ✅ Obtener los valores actuales del drawer aunque no se haya leído nuevo QR
+            # Determinar valores actuales
             current = 0
             capacidad = 0
             if vuelo_actual and drawer_id in drawer_capacity:
@@ -134,6 +145,7 @@ def gen_frames():
                 if vuelo_actual in conteo_vuelos and drawer_id in conteo_vuelos[vuelo_actual]:
                     current = conteo_vuelos[vuelo_actual][drawer_id]
 
+            # Actualizar último QR global
             ultimo_qr_info.update({
                 "qr_data": qr_info,
                 "message": mensaje,
@@ -144,15 +156,19 @@ def gen_frames():
                 "vuelo_actual": vuelo_actual
             })
 
-            # Dibujar recuadro
+            # Dibujar recuadro visual
             x, y, w, h = codigo.rect
             color = (0, 255, 0) if estado == "ok" else (0, 0, 255)
             cv2.rectangle(frame, (x, y), (x + w, y + h), color, 3)
 
+        # Enviar frame al navegador
         ret, buffer = cv2.imencode(".jpg", frame)
         yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + buffer.tobytes() + b"\r\n")
 
 
+# -----------------------------------
+# ENDPOINTS FASTAPI
+# -----------------------------------
 @app.get("/video_feed")
 def video_feed():
     return StreamingResponse(gen_frames(), media_type="multipart/x-mixed-replace; boundary=frame")
@@ -165,6 +181,7 @@ def scanner():
 
 @app.get("/ultimo_qr")
 def obtener_qr(clear: bool = False):
+    """Devuelve el último QR leído o lo reinicia si clear=True."""
     global ultimo_qr_info
     if clear:
         ultimo_qr_info.update({
@@ -181,6 +198,7 @@ def obtener_qr(clear: bool = False):
 
 @app.get("/seleccionar_vuelo")
 def seleccionar_vuelo(vuelo: str = Query(...)):
+    """Selecciona un vuelo activo."""
     global vuelo_actual
     vuelo_actual = str(vuelo).strip().upper()
     print(f"✅ Vuelo seleccionado: {vuelo_actual}")
@@ -190,11 +208,14 @@ def seleccionar_vuelo(vuelo: str = Query(...)):
         "message": f"Vuelo {vuelo_actual} seleccionado"
     })
 
+
 @app.get("/vuelos_disponibles")
 def vuelos():
+    """Devuelve la lista de vuelos disponibles."""
     return JSONResponse(content={"vuelos": vuelos_disponibles})
+
 
 @app.get("/conteo")
 def obtener_conteo():
+    """Devuelve el conteo actual de drawers por vuelo."""
     return JSONResponse(content=conteo_vuelos)
-
